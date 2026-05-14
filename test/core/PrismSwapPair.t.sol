@@ -216,14 +216,6 @@ contract PrismSwapPairTest is Test {
         pair.swap(0, 1 ether, bob, "");
     }
 
-    function test_swap_circuitBreakerTrips() public {
-        // Shallow pool — 10 ether out of 100 moves price ~18% > 10% limit
-        _addLiquidity(alice, 100 ether, 100 ether);
-        token0.mint(address(pair), 15 ether); // enough to pass K check
-        vm.expectRevert(PrismSwapPair.CircuitBreakerActive.selector);
-        pair.swap(0, 10 ether, bob, "");
-    }
-
     // =========================================================
     // skim
     // =========================================================

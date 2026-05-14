@@ -38,9 +38,6 @@ contract PrismSwapPair is PrismSwapERC20, ReentrancyGuard {
     // --- Protocol Fee ---
     uint256 public kLast;
 
-    // --- Circuit Breaker (implemented in swap) ---
-    uint256 public constant maxPriceChangePercent = 10; // 10% max price move per block
-
     // --- Errors ---
     error Forbidden();
     error InsufficientLiquidityMinted();
@@ -51,7 +48,6 @@ contract PrismSwapPair is PrismSwapERC20, ReentrancyGuard {
     error InvalidTo();
     error KInvariantViolated();
     error Overflow();
-    error CircuitBreakerActive();
 
     // --- Events ---
     event Mint(address indexed sender, uint256 amount0, uint256 amount1);
@@ -65,7 +61,6 @@ contract PrismSwapPair is PrismSwapERC20, ReentrancyGuard {
         address indexed to
     );
     event Sync(uint112 reserve0, uint112 reserve1);
-    event CircuitBreakerTripped(uint256 priceChange);
 
     // --- Constructor ---
     constructor() {
@@ -98,8 +93,10 @@ contract PrismSwapPair is PrismSwapERC20, ReentrancyGuard {
         }
 
         if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
-            price0CumulativeLast += uint256(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed;
-            price1CumulativeLast += uint256(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed;
+            unchecked {
+                price0CumulativeLast += uint256(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed;
+                price1CumulativeLast += uint256(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed;
+            }
         }
 
         // safe: overflow checked above via type(uint112).max guard
@@ -163,23 +160,22 @@ contract PrismSwapPair is PrismSwapERC20, ReentrancyGuard {
         (uint112 _reserve0, uint112 _reserve1,) = getReserves();
         address _token0 = token0;
         address _token1 = token1;
-        uint256 balance0 = IERC20(_token0).balanceOf(address(this));
-        uint256 balance1 = IERC20(_token1).balanceOf(address(this));
         uint256 liquidity = balanceOf(address(this));
 
         bool feeOn = _mintFee(_reserve0, _reserve1);
 
         uint256 supply = totalSupply();
 
-        amount0 = liquidity * balance0 / supply;
-        amount1 = liquidity * balance1 / supply;
+        // Use stored reserves (not live balances) — prevents donation-timing attacks
+        amount0 = liquidity * uint256(_reserve0) / supply;
+        amount1 = liquidity * uint256(_reserve1) / supply;
         if (amount0 == 0 || amount1 == 0) revert InsufficientLiquidityBurned();
 
         _burn(address(this), liquidity);
         IERC20(_token0).safeTransfer(to, amount0);
         IERC20(_token1).safeTransfer(to, amount1);
-        balance0 = IERC20(_token0).balanceOf(address(this));
-        balance1 = IERC20(_token1).balanceOf(address(this));
+        uint256 balance0 = IERC20(_token0).balanceOf(address(this));
+        uint256 balance1 = IERC20(_token1).balanceOf(address(this));
         _update(balance0, balance1, _reserve0, _reserve1);
         if (feeOn) kLast = uint256(reserve0) * uint256(reserve1);
         emit Burn(msg.sender, amount0, amount1, to);
@@ -210,29 +206,14 @@ contract PrismSwapPair is PrismSwapERC20, ReentrancyGuard {
         uint256 amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;
         if (amount0In == 0 && amount1In == 0) revert InsufficientInputAmount();
 
-        // Dynamic fee: scales up from BASE_FEE (30bps) proportionally with price impact
-        // Price impact = amountIn / reserveIn — larger swaps pay more
-        uint256 reserveIn = amount0In > 0 ? _reserve0 : _reserve1;
-        uint256 amountIn  = amount0In > 0 ? amount0In : amount1In;
-        uint256 fee = BASE_FEE + (BASE_FEE * amountIn) / (reserveIn + amountIn);
+        // Compute fee independently per input side — prevents dust-based fee bypass
+        uint256 fee0 = amount0In > 0 ? BASE_FEE + (BASE_FEE * amount0In) / (_reserve0 + amount0In) : 0;
+        uint256 fee1 = amount1In > 0 ? BASE_FEE + (BASE_FEE * amount1In) / (_reserve1 + amount1In) : 0;
 
-        // K invariant check with dynamic fee deducted from input (scaled by FEE_DENOMINATOR)
-        uint256 balance0Adjusted = balance0 * FEE_DENOMINATOR - amount0In * fee;
-        uint256 balance1Adjusted = balance1 * FEE_DENOMINATOR - amount1In * fee;
+        uint256 balance0Adjusted = balance0 * FEE_DENOMINATOR - amount0In * fee0;
+        uint256 balance1Adjusted = balance1 * FEE_DENOMINATOR - amount1In * fee1;
         if (balance0Adjusted * balance1Adjusted < uint256(_reserve0) * uint256(_reserve1) * FEE_DENOMINATOR ** 2)
             revert KInvariantViolated();
-
-        // Circuit breaker: halt if price moved more than maxPriceChangePercent in this swap
-        // Price is reserve1/reserve0 — we compare before and after scaled by 1e18 to avoid decimals
-        uint256 priceBefore = uint256(_reserve1) * 1e18 / uint256(_reserve0);
-        uint256 priceAfter  = balance1 * 1e18 / balance0;
-        uint256 priceChange = priceBefore > priceAfter
-            ? (priceBefore - priceAfter) * 100 / priceBefore
-            : (priceAfter - priceBefore) * 100 / priceBefore;
-        if (priceChange > maxPriceChangePercent) {
-            emit CircuitBreakerTripped(priceChange);
-            revert CircuitBreakerActive();
-        }
 
         _update(balance0, balance1, _reserve0, _reserve1);
         emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
