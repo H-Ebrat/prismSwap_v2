@@ -31,12 +31,7 @@ contract PrismSwapFactory is Ownable {
         if (token0 == address(0)) revert ZeroAddress();
         if (getPair[token0][token1] != address(0)) revert PairExists();
 
-        bytes32 salt;
-        assembly {
-            mstore(0x00, token0)
-            mstore(0x20, token1)
-            salt := keccak256(0x00, 0x40)
-        }
+        bytes32 salt = keccak256(abi.encodePacked(token0, token1));
         PrismSwapPair p = new PrismSwapPair{salt: salt}();
         pair = address(p);
 

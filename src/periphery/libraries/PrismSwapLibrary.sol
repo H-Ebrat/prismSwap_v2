@@ -16,7 +16,7 @@ library PrismSwapLibrary {
     // --- Constants ---
     // keccak256 of PrismSwapPair creation bytecode — must be updated if Pair contract changes
     bytes32 internal constant PAIR_INIT_CODE_HASH =
-        0x3db229fcb6081436d274dfe3b2eb84b6c979c68d3c8d4a145e0a22c245d88ce6;
+        0xdd68c8df52c197bf6cc66e4fb07179a9bffc8753086a80cb93330b77d9a9c3d0;
 
     uint256 internal constant BASE_FEE = 30;
     uint256 internal constant FEE_DENOMINATOR = 10_000;
