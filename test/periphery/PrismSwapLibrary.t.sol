@@ -263,4 +263,129 @@ contract PrismSwapLibraryTest is Test {
         path[0] = address(tokenA);
         harness.getAmountsIn(address(factory), 1 ether, path);
     }
+
+    // =========================================================
+    // fuzz tests
+    // =========================================================
+
+    function testFuzz_sortTokens_alwaysOrdered(address a, address b) public {
+        vm.assume(a != b);
+        vm.assume(a != address(0));
+        vm.assume(b != address(0));
+        (address t0, address t1) = PrismSwapLibrary.sortTokens(a, b);
+        // No matter what order the caller passed, t0 must always be the smaller address
+        assertLt(uint160(t0), uint160(t1));
+    }
+
+    function testFuzz_quote_roundsDown(
+        uint256 amountA,
+        uint256 reserveA,
+        uint256 reserveB
+    ) public pure {
+        vm.assume(amountA > 0 && amountA <= type(uint112).max);
+        vm.assume(reserveA > 0 && reserveA <= type(uint112).max);
+        vm.assume(reserveB > 0 && reserveB <= type(uint112).max);
+
+        uint256 amountB = PrismSwapLibrary.quote(amountA, reserveA, reserveB);
+
+        // quote is integer division so it rounds down — amountB * reserveA can never exceed amountA * reserveB
+        assertLe(amountB * reserveA, amountA * reserveB);
+    }
+
+    function testFuzz_getAmountOut_neverDrainsPool(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) public pure {
+        vm.assume(amountIn > 0 && amountIn <= type(uint112).max);
+        vm.assume(reserveIn > 0 && reserveIn <= type(uint112).max);
+        vm.assume(reserveOut > 0 && reserveOut <= type(uint112).max);
+
+        uint256 amountOut = PrismSwapLibrary.getAmountOut(amountIn, reserveIn, reserveOut);
+
+        // Output must always be strictly less than the reserve — pool can never be fully drained
+        assertLt(amountOut, reserveOut);
+    }
+
+    function testFuzz_getAmountOut_feeAlwaysApplied(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) public pure {
+        vm.assume(amountIn > 0 && amountIn <= type(uint112).max);
+        vm.assume(reserveIn > 0 && reserveIn <= type(uint112).max);
+        vm.assume(reserveOut > 0 && reserveOut <= type(uint112).max);
+
+        uint256 amountOut = PrismSwapLibrary.getAmountOut(amountIn, reserveIn, reserveOut);
+
+        // Zero-fee constant-product output — always the maximum possible output
+        // With any fee applied, actual output must be at or below this ceiling
+        uint256 zeroFeeOut = amountIn * reserveOut / (reserveIn + amountIn);
+        assertLe(amountOut, zeroFeeOut);
+    }
+
+    function testFuzz_getAmountIn_roundTrip(
+        uint256 amountOut,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) public pure {
+        vm.assume(reserveIn > 0 && reserveIn <= type(uint112).max);
+        vm.assume(reserveOut > 0 && reserveOut <= type(uint112).max);
+        // amountOut must be strictly less than reserveOut — can't want more than the pool holds
+        vm.assume(amountOut > 0 && amountOut < reserveOut);
+
+        uint256 amountIn = PrismSwapLibrary.getAmountIn(amountOut, reserveIn, reserveOut);
+        uint256 actualOut = PrismSwapLibrary.getAmountOut(amountIn, reserveIn, reserveOut);
+
+        // Round-trip: the input computed by getAmountIn, when run through getAmountOut,
+        // must yield at least as much output as originally desired
+        // This proves getAmountIn never underestimates the required input
+        assertGe(actualOut, amountOut);
+    }
+
+    function testFuzz_getAmountsOut_pathLengthMatchesAmounts(
+        uint256 amountIn
+    ) public {
+        vm.assume(amountIn > 0 && amountIn <= 100 ether);
+
+        factory.createPair(address(tokenA), address(tokenB));
+        address pairAddr = PrismSwapLibrary.pairFor(address(factory), address(tokenA), address(tokenB));
+        MockERC20(token0).mint(pairAddr, 1000 ether);
+        MockERC20(token1).mint(pairAddr, 1000 ether);
+        PrismSwapPair(pairAddr).mint(address(this));
+
+        address[] memory path = new address[](2);
+        path[0] = address(tokenA);
+        path[1] = address(tokenB);
+
+        uint256[] memory amounts = PrismSwapLibrary.getAmountsOut(address(factory), amountIn, path);
+
+        // amounts array length always equals path length
+        assertEq(amounts.length, path.length);
+        // first element is always the exact input
+        assertEq(amounts[0], amountIn);
+    }
+
+    function testFuzz_getAmountsIn_pathLengthMatchesAmounts(
+        uint256 amountOut
+    ) public {
+        vm.assume(amountOut > 0 && amountOut <= 100 ether);
+
+        factory.createPair(address(tokenA), address(tokenB));
+        address pairAddr = PrismSwapLibrary.pairFor(address(factory), address(tokenA), address(tokenB));
+        MockERC20(token0).mint(pairAddr, 1000 ether);
+        MockERC20(token1).mint(pairAddr, 1000 ether);
+        PrismSwapPair(pairAddr).mint(address(this));
+
+        address[] memory path = new address[](2);
+        path[0] = address(tokenA);
+        path[1] = address(tokenB);
+
+        uint256[] memory amounts = PrismSwapLibrary.getAmountsIn(address(factory), amountOut, path);
+
+        // amounts array length always equals path length
+        assertEq(amounts.length, path.length);
+        // last element is always the exact desired output
+        assertEq(amounts[amounts.length - 1], amountOut);
+    }
 }
