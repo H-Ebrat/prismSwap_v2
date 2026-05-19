@@ -17,12 +17,14 @@ contract PrismSwapRouter {
     error InsufficientOutputAmount();
     error ExcessiveInputAmount();
     error InvalidPath();
+    error ZeroAddress();
 
     // --- State ---
     address public immutable factory;
 
     // --- Constructor ---
     constructor(address _factory) {
+        if (_factory == address(0)) revert ZeroAddress();
         factory = _factory;
     }
 
